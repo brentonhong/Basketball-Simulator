@@ -1,0 +1,241 @@
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+
+
+# Markov Chain Class
+class MarkovChain:
+    def __init__(self, states, transition_matrix):
+        self.states = states
+        self.transition_matrix = transition_matrix
+        self.current_state = random.choice(states)
+
+    def next_state(self):
+        current_index = self.states.index(self.current_state)
+        self.current_state = np.random.choice(
+            self.states, p=self.transition_matrix[current_index]
+        )
+        return self.current_state
+
+
+# Player Class
+class Player:
+    def __init__(self, name, position, stats):
+        self.name = name
+        self.position = position
+        self.stats = stats  # Shooting percentages
+        self.fatigue_level = 'Fresh'  # 'Fresh', 'Tired', 'Exhausted'
+        self.on_court = True
+        self.recent_shots_made = 0  # For Bayesian updates
+
+    def fatigue_modifier(self):
+        modifiers = {'Fresh': 1.0, 'Tired': 0.8, 'Exhausted': 0.5}
+        return modifiers[self.fatigue_level]
+
+    def update_fatigue(self, exertion, recovery_chance=0.2):
+        fatigue_probs = {
+            'Fresh': {'Fresh': 0.8, 'Tired': 0.2, 'Exhausted': 0.0},
+            'Tired': {'Fresh': recovery_chance, 'Tired': 0.8 - recovery_chance, 'Exhausted': 0.2},
+            'Exhausted': {'Fresh': 0.0, 'Tired': recovery_chance, 'Exhausted': 1.0 - recovery_chance},
+        }
+        if self.on_court:
+            probs = fatigue_probs[self.fatigue_level]
+            self.fatigue_level = np.random.choice(
+                ['Fresh', 'Tired', 'Exhausted'], p=list(probs.values())
+            )
+        else:
+            # Recover fatigue faster off court
+            if self.fatigue_level == 'Exhausted':
+                self.fatigue_level = 'Tired'
+            elif self.fatigue_level == 'Tired':
+                self.fatigue_level = 'Fresh'
+
+    def bayesian_update_shooting(self, shot_type):
+        prior = self.stats[shot_type]
+        updated_prob = min(prior + 0.05 * self.recent_shots_made, 1.0)
+        self.stats[shot_type] = updated_prob  # Update shooting stats
+        return updated_prob
+
+    def simulate_shot(self, shot_type):
+        # Consider fatigue's effect on shooting success
+        success_prob = self.bayesian_update_shooting(shot_type) * self.fatigue_modifier()
+        result = np.random.rand() < success_prob
+        self.recent_shots_made = self.recent_shots_made + 1 if result else 0
+        return result
+
+    def should_shoot(self):
+        # Lower probability of shooting based on fatigue
+        shoot_chances = {'Fresh': 0.9, 'Tired': 0.6, 'Exhausted': 0.3}
+        return np.random.rand() < shoot_chances[self.fatigue_level]
+
+
+# Team Class
+class Team:
+    def __init__(self, name, players):
+        self.name = name
+        self.players = players
+        self.score = 0
+
+    def dynamic_substitution(self):
+        for player in self.players:
+            if player.fatigue_level == 'Exhausted' and player.on_court:
+                player.on_court = False
+                substitutes = [p for p in self.players if not p.on_court]
+                if substitutes:
+                    sub_in = random.choice(substitutes)
+                    sub_in.on_court = True
+                    print(f"{sub_in.name} substitutes for {player.name}")
+
+
+# Game Class with Enhanced Features
+class GameWithMarkovChains:
+    def __init__(self, team_a, team_b, game_duration=120):
+        self.team_a = team_a
+        self.team_b = team_b
+        self.time = 0
+        self.game_duration = game_duration
+        self.score_history = {team_a.name: [], team_b.name: []}
+        self.time_steps = []
+        self.player_fatigue_history = {
+            player.name: [] for player in team_a.players + team_b.players
+        }
+        self.player_shooting_history = {
+            player.name: {'three_pt': [], 'mid_range': [], 'layup': []}
+            for player in team_a.players + team_b.players
+        }
+        self.possession_chain = MarkovChain(
+            states=[team_a.name, team_b.name],
+            transition_matrix=[[0.6, 0.4], [0.4, 0.6]],
+        )
+        self.shot_type_chain = MarkovChain(
+            states=['three_pt', 'mid_range', 'layup'],
+            transition_matrix=[
+                [0.7, 0.2, 0.1],
+                [0.2, 0.6, 0.2],
+                [0.1, 0.3, 0.6],
+            ],
+        )
+
+    def log_player_stats(self, team):
+        stats = []
+        for player in team.players:
+            stats.append(
+                f"{player.name}: Fatigue={player.fatigue_level}, On Court={player.on_court}"
+            )
+        return stats
+
+    def simulate_possession(self):
+        possession_team_name = self.possession_chain.next_state()
+        offense_team = self.team_a if possession_team_name == self.team_a.name else self.team_b
+        defense_team = self.team_b if offense_team == self.team_a else self.team_a
+
+        shot_type = self.shot_type_chain.next_state()
+        shooter = random.choice([p for p in offense_team.players if p.on_court])
+
+        if shooter.should_shoot():
+            shot_result = shooter.simulate_shot(shot_type)
+            if shot_result:
+                points = 3 if shot_type == 'three_pt' else 2
+                offense_team.score += points
+                print(f"{shooter.name} scores {points} points with a {shot_type}")
+            else:
+                print(f"{shooter.name} misses a {shot_type}")
+        else:
+            # Player rests if they don't shoot
+            print(f"{shooter.name} rests instead of taking a shot.")
+            shooter.update_fatigue(exertion=0)
+
+        # Update fatigue for all players
+        for player in offense_team.players + defense_team.players:
+            player.update_fatigue(exertion=1 if player != shooter else 0)
+            self.player_fatigue_history[player.name].append(player.fatigue_level)
+
+        # Log player shooting stats
+        for shot in ['three_pt', 'mid_range', 'layup']:
+            self.player_shooting_history[shooter.name][shot].append(shooter.stats[shot])
+
+        offense_team.dynamic_substitution()
+        defense_team.dynamic_substitution()
+
+        print("Team Stats:")
+        print(f"{offense_team.name} Score: {offense_team.score}")
+        print(f"{defense_team.name} Score: {defense_team.score}")
+        print("Player Stats:")
+        print("\n".join(self.log_player_stats(offense_team)))
+        print("\n".join(self.log_player_stats(defense_team)))
+
+        self.time += 0.5
+        self.score_history[self.team_a.name].append(self.team_a.score)
+        self.score_history[self.team_b.name].append(self.team_b.score)
+        self.time_steps.append(self.time)
+
+    def simulate_game(self):
+        while self.time < self.game_duration:
+            self.simulate_possession()
+        print(f"Final Score: {self.team_a.name} {self.team_a.score} - {self.team_b.name} {self.team_b.score}")
+
+    def visualize_game(self):
+        # Team Scores Over Time
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.time_steps, self.score_history[self.team_a.name], label=self.team_a.name)
+        plt.plot(self.time_steps, self.score_history[self.team_b.name], label=self.team_b.name)
+        plt.xlabel('Game Time (Minutes)')
+        plt.ylabel('Team Score')
+        plt.title('Team Scores Over Time')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        # Player Fatigue Levels
+        fatigue_levels = {'Fresh': 1, 'Tired': 0.5, 'Exhausted': 0.1}
+        for team in [self.team_a, self.team_b]:
+            plt.figure(figsize=(12, 6))
+            for player in team.players:
+                fatigue_data = [
+                    fatigue_levels[level]
+                    for level in self.player_fatigue_history[player.name]
+                ]
+                plt.plot(
+                    self.time_steps[:len(fatigue_data)], fatigue_data, label=player.name
+                )
+            plt.xlabel('Game Time (Minutes)')
+            plt.ylabel('Fatigue Level (1=Fresh, 0.1=Exhausted)')
+            plt.title(f'Player Fatigue Levels - {team.name}')
+            plt.legend()
+            plt.grid()
+            plt.show()
+
+        # Shooting Success Over Time
+        for team in [self.team_a, self.team_b]:
+            for shot in ['three_pt', 'mid_range', 'layup']:
+                plt.figure(figsize=(10, 6))
+                for player in team.players:
+                    shooting_data = self.player_shooting_history[player.name][shot]
+                    plt.plot(
+                        self.time_steps[:len(shooting_data)],
+                        shooting_data,
+                        label=player.name,
+                    )
+                plt.title(f'{team.name} {shot} Success Rates Over Time')
+                plt.ylabel('Success Rate')
+                plt.xlabel('Game Time (Minutes)')
+                plt.legend()
+                plt.grid()
+                plt.show()
+
+
+# Run the Simulation
+if __name__ == '__main__':
+    stats = {
+        'three_pt': 0.35,
+        'mid_range': 0.45,
+        'layup': 0.65,
+    }
+    players_a = [Player(f'Player A{i}', 'Position', stats.copy()) for i in range(1, 6)]
+    players_b = [Player(f'Player B{i}', 'Position', stats.copy()) for i in range(1, 6)]
+    team_a = Team('Team A', players_a)
+    team_b = Team('Team B', players_b)
+
+    game = GameWithMarkovChains(team_a, team_b, game_duration=120)
+    game.simulate_game()
+    game.visualize_game()
